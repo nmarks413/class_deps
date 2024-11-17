@@ -85,34 +85,43 @@ impl Class {
     fn new(input_list: Vec<ElementRef>) -> Self {
         let class_dep_num_title = input_list[0].text().collect::<Vec<_>>();
 
-        let Some((department, num)) = class_dep_num_title[1].split_once(' ') else {
-            eprintln!("something has gone horribly wrong");
-            eprintln!("Here is a dump of the scraped list {:?}", input_list);
-            panic!();
-        };
+        let (department, num) = class_dep_num_title[1].split_once(' ').unwrap_or_else(|| {
+            eprintln!("Error parsing department and number: {:?}", input_list);
+            panic!("Failed to parse input list");
+        });
 
-        let course_number: (u32, Option<char>) = if num.chars().last().unwrap().is_alphabetic() {
-            (
-                num[..num.len() - 1].parse().unwrap(),
-                Some(num.chars().last().unwrap()),
-            )
+        let course_number: (u32, Option<char>) = if let Some(last_char) = num.chars().last() {
+            if last_char.is_alphabetic() {
+                (
+                    num[..num.len() - 1].parse().expect("invalid course number"),
+                    Some(last_char),
+                )
+            } else {
+                (num.parse().expect("invalid course number"), None)
+            }
         } else {
-            (num.parse().unwrap(), None)
+            panic!("Empty course number");
         };
 
-        let binding = input_list[1].text().collect::<Vec<_>>().join("");
-        let description = binding.trim().to_string();
+        let description = input_list[1]
+            .text()
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string();
 
         let department = department.to_string();
 
         let title = class_dep_num_title[2].to_string();
 
-        let credits: u32 = input_list[2].text().collect::<Vec<_>>()[2]
+        let credits: u32 = input_list[2]
+            .text()
+            .collect::<Vec<_>>()
+            .get(2)
+            .expect("No credits data")
             .trim()
             .parse()
-            .unwrap();
-
-        let mut index = 5;
+            .expect("Credits data not a number");
 
         let mut requirements = None;
 
@@ -120,52 +129,64 @@ impl Class {
 
         let mut cross_listed = None;
 
-        if index < input_list.len() {
-            cross_listed = match input_list[5].value().has_class(
+        let mut input_iter = input_list.into_iter().skip(5).peekable();
+
+        if let Some(element) = input_iter.peek() {
+            //See if we have a crosslisted field
+            if element.value().has_class(
                 "crosslisted",
                 scraper::CaseSensitivity::AsciiCaseInsensitive,
             ) {
-                true => {
-                    index = 7;
-                    Some(input_list[6].text().collect::<String>())
+                cross_listed = input_iter.nth(2).map(|e| e.text().collect::<String>());
+            }
+
+            //See if we have a requirements field
+            if let Some(element) = input_iter.peek() {
+                if element
+                    .value()
+                    .has_class("instructor", scraper::CaseSensitivity::AsciiCaseInsensitive)
+                {
+                    input_iter.next();
                 }
-                false => None,
-            };
-            if index < input_list.len() {
-                requirements = match input_list[index].value().has_class(
+            }
+            if let Some(element) = input_iter.peek() {
+                //See if we have a crosslisted field
+                if element.value().has_class(
                     "extraFields",
                     scraper::CaseSensitivity::AsciiCaseInsensitive,
                 ) {
-                    true => {
-                        index += 1;
-                        Some(
-                            input_list[index - 1]
-                                .text()
-                                .collect::<String>()
-                                .split_once(':')
-                                .map(|tuple| {
-                                    tuple
-                                        .1
-                                        .split(';')
-                                        .map(str::trim)
-                                        .map(str::to_string)
-                                        .collect::<Vec<String>>()
-                                }),
-                        )
-                    }
-                    false => None,
-                };
-                if index < input_list.len() {
-                    gen_ed = match input_list[index]
+                    requirements = input_iter
+                        .next()
+                        .unwrap()
+                        .text()
+                        .collect::<String>()
+                        .split_once(':')
+                        .map(|(_, reqs)| {
+                            reqs.split(';')
+                                .map(str::trim)
+                                .map(str::to_string)
+                                .collect::<Vec<String>>()
+                        });
+                }
+            }
+            //See if we have gen_eds field
+            if let Some(element) = input_iter.peek() {
+                if element
+                    .value()
+                    .has_class("gen_ed", scraper::CaseSensitivity::AsciiCaseInsensitive)
+                    || element
                         .value()
-                        .has_class("gen_ed", scraper::CaseSensitivity::AsciiCaseInsensitive)
-                        || input_list[index]
-                            .value()
-                            .has_class("genEd", scraper::CaseSensitivity::AsciiCaseInsensitive)
-                    {
-                        true => GenEds::from_str(input_list[index].text().collect::<Vec<_>>()[2]),
-                        false => None,
-                    };
+                        .has_class("genEd", scraper::CaseSensitivity::AsciiCaseInsensitive)
+                {
+                    gen_ed = GenEds::from_str(
+                        input_iter
+                            .next()
+                            .unwrap()
+                            .text()
+                            .collect::<Vec<_>>()
+                            .get(2)
+                            .expect("Gen eds field missing"),
+                    );
                 }
             }
         }
@@ -176,7 +197,7 @@ impl Class {
             title,
             description,
             credits,
-            requirements: requirements.flatten(),
+            requirements,
             gen_ed,
             cross_listed,
         }
